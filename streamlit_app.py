@@ -16,17 +16,14 @@ IMG_H, IMG_W = 64, 256
 CLASS_NAMES = ["display", "monospace", "san_serif", "script", "serif"]
 
 
+MODEL_PATH = Path("/workspaces/Font-detection/checkpoints/best_model.keras")
+
 @st.cache_resource
-def load_font_model(model_path: str):
-    """
-    Load checkpoint Keras (full model .keras/.h5).
-    Dùng cache_resource để chỉ load 1 lần.
-    """
-    model_path = Path(model_path)
-    if not model_path.exists():
-        raise FileNotFoundError(f"Không tìm thấy model tại: {model_path}")
-    model = keras.models.load_model(model_path)
-    return model
+def load_font_model():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Không tìm thấy model tại: {MODEL_PATH}")
+    return keras.models.load_model(MODEL_PATH)
+
 
 
 def preprocess_image(pil_img: Image.Image):
@@ -63,7 +60,7 @@ def run_font_classifier(image_file, model_path: str):
     x, resized_img = preprocess_image(pil_img)
 
     # Load model
-    model = load_font_model(model_path)
+    model = load_font_model()
 
     # Dự đoán
     probs = model.predict(x)[0]         # shape (5,)
