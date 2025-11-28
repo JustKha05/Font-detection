@@ -10,6 +10,7 @@ from tensorflow import keras
 
 # ---- PyTorch ----
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
 
@@ -20,33 +21,130 @@ CLASS_NAMES = ["display", "monospace", "san_serif", "script", "serif"]
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+# Model mặc định dùng cho app (có thể là .keras hoặc .pth)
+DEFAULT_MODEL_PATH = "/workspaces/Font-detection/CNN/best_model.keras"
+# hoặc: DEFAULT_MODEL_PATH = "/workspaces/Font-detection/ViT/vit_font_best.pth"
+
 
 # ================== BUILD MODEL TORCH (CẦN SỬA CHO ĐÚNG) ==================
 
+class PatchEmbedding(nn.Module):
+    def __init__(self, img_h, img_w, patch_size, in_chans, emb_dim):
+        super().__init__()
+        self.patch_size = patch_size
+        self.proj = nn.Conv2d(
+            in_chans,
+            emb_dim,
+            kernel_size=patch_size,
+            stride=patch_size,
+        )
+        # số patch: (H/P) * (W/P)
+        num_patches = (img_h // patch_size) * (img_w // patch_size)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, emb_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, emb_dim))
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        x = self.proj(x)  # [B, emb_dim, H/P, W/P]
+        x = x.flatten(2).transpose(1, 2)  # [B, N, emb_dim]
+
+        B, N, D = x.shape
+
+        cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, D]
+        x = torch.cat((cls_tokens, x), dim=1)          # [B, N+1, D]
+
+        x = x + self.pos_embed[:, : N + 1, :]
+        return x
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, d_model, num_heads, mlp_dim, dropout=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            d_model,
+            num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.mlp = nn.Sequential(
+            nn.Linear(d_model, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        attn_out, _ = self.attn(x, x, x)
+        x = self.norm1(x + attn_out)
+        x = self.norm2(x + self.mlp(x))
+        return x
+
+
+class SimpleViT(nn.Module):
+    def __init__(
+        self,
+        img_h=64,
+        img_w=256,
+        patch_size=16,
+        in_chans=1,
+        emb_dim=128,
+        depth=4,
+        num_heads=4,
+        mlp_dim=256,
+        num_classes=5,
+        dropout=0.1,
+    ):
+        super().__init__()
+        self.patch_embed = PatchEmbedding(
+            img_h, img_w, patch_size, in_chans, emb_dim
+        )
+        self.blocks = nn.ModuleList(
+            [
+                TransformerEncoderLayer(
+                    d_model=emb_dim,
+                    num_heads=num_heads,
+                    mlp_dim=mlp_dim,
+                    dropout=dropout,
+                )
+                for _ in range(depth)
+            ]
+        )
+        self.norm = nn.LayerNorm(emb_dim)
+        self.head = nn.Linear(emb_dim, num_classes)
+
+    def forward(self, x):
+        # x: [B, C, H, W]
+        x = self.patch_embed(x)  # [B, N+1, D]
+        for blk in self.blocks:
+            x = blk(x)
+        x = self.norm(x)         # [B, N+1, D]
+        cls_token = x[:, 0]      # [B, D]
+        logits = self.head(cls_token)  # [B, num_classes]
+        return logits
+
+
 def build_torch_model():
     """
-    TODO: SỬA LẠI HÀM NÀY ĐỂ KHỚP VỚI CODE TRAIN ViT CỦA BẠN.
-
-    Ví dụ nếu lúc train bạn dùng timm:
-
-        import timm
-        model = timm.create_model(
-            "vit_tiny_patch16_224.augreg_in21k_ft_in1k",
-            pretrained=False,
-            in_chans=1,      # nếu ảnh grayscale
-            num_classes=5,
-        )
-        return model
-
-    Hoặc nếu bạn có class FontViT riêng:
-
-        from vit_model import FontViT
-        model = FontViT(num_classes=5)
-        return model
+    ViT đơn giản cho ảnh 1×64×256, 5 lớp.
+    Nếu lúc train bạn dùng đúng kiến trúc này,
+    vit_font_best.pth sẽ load được thẳng.
     """
-    raise NotImplementedError(
-        "Hãy implement build_torch_model() giống hệt code train ViT (PyTorch) của bạn."
+    model = SimpleViT(
+        img_h=IMG_H,
+        img_w=IMG_W,
+        patch_size=16,
+        in_chans=1,
+        emb_dim=128,
+        depth=4,
+        num_heads=4,
+        mlp_dim=256,
+        num_classes=len(CLASS_NAMES),
+        dropout=0.1,
     )
+    return model
 
 
 # ================== LOAD MODEL TỔNG ==================
@@ -123,25 +221,25 @@ def preprocess_for_torch(pil_img: Image.Image):
 
 # ================== HÀM DỰ ĐOÁN CHUNG ==================
 
-def run_font_classifier(image_file, model_path: str):
+def run_font_classifier(image_file):
     """
     - Đọc ảnh
-    - Load model Keras hoặc Torch tùy đuôi file model_path
+    - Load model từ DEFAULT_MODEL_PATH (Keras hoặc Torch)
     - Trả về: (pred_label, probs, resized_img, backend)
     """
     pil_img = Image.open(image_file)
 
-    model_info = load_font_model(model_path)
+    model_info = load_font_model(DEFAULT_MODEL_PATH)
     backend = model_info["backend"]
     model = model_info["model"]
 
     if backend == "keras":
         x, resized_img = preprocess_for_keras(pil_img)
-        probs = model.predict(x)[0]          # numpy [5]
+        probs = model.predict(x)[0]
     elif backend == "torch":
         x, resized_img = preprocess_for_torch(pil_img)
         with torch.no_grad():
-            logits = model(x)                # [1, 5]
+            logits = model(x)
             probs = F.softmax(logits, dim=1)[0].cpu().numpy()
     else:
         raise ValueError(f"Backend không hỗ trợ: {backend}")
@@ -150,6 +248,7 @@ def run_font_classifier(image_file, model_path: str):
     pred_label = CLASS_NAMES[pred_idx]
 
     return pred_label, probs, resized_img, backend
+
 
 
 # ================== STREAMLIT UI ==================
@@ -171,20 +270,6 @@ def main():
         """
     )
 
-    # ----- Sidebar: cấu hình -----
-    with st.sidebar:
-        st.header("Cấu hình model")
-
-        default_ckpt = "/workspaces/Font-detection/ViT/vit_font_best.pth"
-        # hoặc "checkpoints/best_model.keras" tùy bạn
-
-        model_path = st.text_input(
-            "Đường dẫn checkpoint (.keras / .h5 / .pth / .pt)",
-            value=default_ckpt,
-        )
-
-        st.caption(f"Thiết bị PyTorch: **{DEVICE}**")
-
     # ----- Upload ảnh -----
     uploaded_img = st.file_uploader(
         "Tải lên ảnh font (.png, .jpg, .jpeg)",
@@ -195,7 +280,6 @@ def main():
         st.subheader("Ảnh gốc")
         st.image(uploaded_img, use_container_width=True)
 
-    # ----- Nút dự đoán -----
     if st.button("🚀 Dự đoán font family"):
         if uploaded_img is None:
             st.error("Bạn cần tải lên một ảnh trước.")
@@ -204,17 +288,14 @@ def main():
         try:
             with st.spinner("Đang phân loại font..."):
                 pred_label, probs, resized_img, backend = run_font_classifier(
-                    uploaded_img,
-                    model_path=model_path,
+                    uploaded_img
                 )
-        except (FileNotFoundError, ValueError, NotImplementedError) as e:
+        except (FileNotFoundError, ValueError) as e:
             st.error(str(e))
             return
         except Exception as e:
             st.error(f"Lỗi khi load model hoặc dự đoán: {e}")
             return
-
-        st.success(f"✅ Dự đoán: **{pred_label}** (backend: {backend})")
 
         col1, col2 = st.columns(2)
 
@@ -226,13 +307,6 @@ def main():
             st.markdown("**Xác suất từng lớp:**")
             for cls, p in zip(CLASS_NAMES, probs):
                 st.write(f"- `{cls}`: {p:.4f}")
-
-            try:
-                import pandas as pd
-                df = pd.DataFrame({"class": CLASS_NAMES, "prob": probs}).set_index("class")
-                st.bar_chart(df)
-            except ImportError:
-                pass
 
 
 if __name__ == "__main__":
