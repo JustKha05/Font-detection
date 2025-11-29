@@ -16,7 +16,8 @@ IMG_H, IMG_W = 64, 256
 CLASS_NAMES = ["display", "monospace", "san_serif", "script", "serif"]
 
 # Đường dẫn model cố định
-MODEL_PATH = Path("/workspaces/Font-detection/CNN/best_model.keras")
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR / "CNN" / "best_model.keras"
 
 
 @st.cache_resource
