@@ -8,14 +8,9 @@ from PIL import Image
 
 # ================== CẤU HÌNH ==================
 
-# Kích thước ảnh đúng với lúc train: (64, 256, 1)
 IMG_H, IMG_W = 64, 256
-
-# Thứ tự lớp phải KHỚP với class_indices lúc train:
-# {'display': 0, 'monospace': 1, 'san_serif': 2, 'script': 3, 'serif': 4}
 CLASS_NAMES = ["display", "monospace", "san_serif", "script", "serif"]
 
-# Đường dẫn model cố định
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "CNN" / "best_model.keras"
 
@@ -28,39 +23,29 @@ def load_font_model():
 
 
 def preprocess_image(pil_img: Image.Image):
-    """
-    Tiền xử lý ảnh:
-    - Convert sang grayscale (1 kênh)
-    - Resize về (64, 256)
-    - Scale về [0,1]
-    - Thêm batch dimension -> (1, 64, 256, 1)
-    """
-    img = pil_img.convert("L")           # grayscale
-    img = img.resize((IMG_W, IMG_H))     # (width, height)
+    img = pil_img.convert("L")
+    img = img.resize((IMG_W, IMG_H))
 
-    arr = np.array(img, dtype="float32") / 255.0  # [H, W]
-    arr = np.expand_dims(arr, axis=-1)            # [H, W, 1]
-    arr = np.expand_dims(arr, axis=0)             # [1, H, W, 1]
-
-    return arr, img
+    arr = np.array(img, dtype="float32") / 255.0
+    arr = np.expand_dims(arr, axis=-1)   # [H, W, 1]
+    arr = np.expand_dims(arr, axis=0)    # [1, H, W, 1]
+    return arr
 
 
 def run_font_classifier(image_file):
     """
-    - Nhận file ảnh upload
-    - Load model từ MODEL_PATH
-    - Trả về: (pred_label, probs, ảnh đã resize)
+    Nhận file ảnh upload, trả về (pred_label, probs)
     """
     pil_img = Image.open(image_file)
-    x, resized_img = preprocess_image(pil_img)
+    x = preprocess_image(pil_img)
 
     model = load_font_model()
 
-    probs = model.predict(x)[0]         # shape (5,)
+    probs = model.predict(x)[0]          # shape (5,)
     pred_idx = int(np.argmax(probs))
     pred_label = CLASS_NAMES[pred_idx]
 
-    return pred_label, probs, resized_img
+    return pred_label, probs
 
 
 # ================== STREAMLIT UI ==================
@@ -68,7 +53,6 @@ def run_font_classifier(image_file):
 def main():
     st.set_page_config(page_title="Font Family Detection", page_icon="🔤")
 
-    # Ẩn hoàn toàn sidebar & nút toggle (cho chắc)
     hide_sidebar_style = """
         <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -92,7 +76,7 @@ def main():
         """
     )
 
-    # ----- Upload ảnh -----
+    # ----- Upload ảnh gốc -----
     uploaded_img = st.file_uploader(
         "Tải lên ảnh font (.png, .jpg, .jpeg)",
         type=["png", "jpg", "jpeg"],
@@ -110,7 +94,7 @@ def main():
 
         try:
             with st.spinner("Đang phân loại font..."):
-                pred_label, probs, resized_img = run_font_classifier(uploaded_img)
+                pred_label, probs = run_font_classifier(uploaded_img)
         except FileNotFoundError as e:
             st.error(str(e))
             return
@@ -120,16 +104,9 @@ def main():
 
         st.success(f"✅ Dự đoán: **{pred_label}**")
 
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("**Ảnh sau khi resize (64×256, grayscale):**")
-            st.image(resized_img, width=256, clamp=True)
-
-        with col2:
-            st.markdown("**Xác suất từng lớp:**")
-            for cls, p in zip(CLASS_NAMES, probs):
-                st.write(f"- `{cls}`: {p:.4f}")
+        st.markdown("**Xác suất từng lớp:**")
+        for cls, p in zip(CLASS_NAMES, probs):
+            st.write(f"- `{cls}`: {p:.4f}")
 
 
 if __name__ == "__main__":
