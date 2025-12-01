@@ -58,16 +58,35 @@ def load_font_model():
     return model
 
 
-test_transform = transforms.Compose([
-    transforms.Resize((IMG_H, IMG_W)),
-    transforms.Grayscale(num_output_channels=1),
-    transforms.ToTensor(),
-])
-
-
 def preprocess_image(pil_img: Image.Image):
-    tensor = test_transform(pil_img).unsqueeze(0).to(DEVICE)
+    # 1) Chuyển grayscale
+    img = pil_img.convert("L")
+
+    orig_w, orig_h = img.size
+
+    # 2) Scale theo chiều cao: H -> IMG_H (64), W thay đổi theo tỉ lệ
+    target_h = IMG_H
+    scale = target_h / orig_h
+    new_w = int(round(orig_w * scale))
+
+    img = img.resize((new_w, target_h), Image.BILINEAR)  # (new_w, 64)
+
+    # 3) Nếu rộng hơn 256: crop giữa
+    if new_w > IMG_W:
+        left = (new_w - IMG_W) // 2
+        right = left + IMG_W
+        img = img.crop((left, 0, right, target_h))  # (256, 64)
+    # 4) Nếu hẹp hơn 256: pad hai bên cho đủ 256
+    elif new_w < IMG_W:
+        canvas = Image.new("L", (IMG_W, target_h), color=255)  # nền trắng
+        offset_x = (IMG_W - new_w) // 2
+        canvas.paste(img, (offset_x, 0))
+        img = canvas  # (256, 64)
+
+    # Giờ img chắc chắn là (256, 64) với chữ ít méo nhất có thể
+    tensor = transforms.ToTensor()(img).unsqueeze(0).to(DEVICE)  # [1, 1, 64, 256]
     return tensor
+
 
 
 def run_font_classifier(image_file):
